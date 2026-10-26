@@ -1,5 +1,5 @@
 // Offline cache. Bump VERSION whenever any file changes so phones pick up the update.
-const VERSION = 'budget-v1';
+const VERSION = 'budget-v3';
 const FILES = ['./', './index.html', './app.js', './parser.js', './manifest.webmanifest', './icon-180.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

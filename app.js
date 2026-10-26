@@ -76,12 +76,17 @@
       }
     } else {
       for (const e of P.splitLog(text)) {
-        const h = 'a' + P.hash(e.raw.replace(/\s+/g, ' '));
+        // 'b' keys: only texts that became a transaction are marked seen, so a parser fix can pick up texts it skipped before.
+        const h = 'b' + P.hash(e.raw.replace(/\s+/g, ' '));
         if (S.seen[h]) continue;
-        S.seen[h] = 1;
         const p = P.parseAlert(e.body, e.when);
         if (!p) { skipped++; continue; }
-        addTxn(p, 'alert'); added++;
+        S.seen[h] = 1;
+        // Texts imported by the older version have no key yet: match them once instead of adding twice.
+        const d = P.ymd(p.date || new Date());
+        const legacy = S.txns.find(t => t.src === 'alert' && !t.h && t.date === d && Math.abs(t.amount - p.amount) < 0.005 && t.merchant === p.merchant);
+        if (legacy) { legacy.h = h; continue; }
+        addTxn(p, 'alert').h = h; added++;
       }
     }
     S.lastSync = new Date().toISOString();
