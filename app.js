@@ -144,6 +144,55 @@
     return { txns, spent, total, income, invested, budget, uncat };
   }
 
+  // Spending that counts against the budget (no transfers, investing, income), for dates lo..hi inclusive.
+  function spentBetween(lo, hi) {
+    let s = 0;
+    for (const t of S.txns) {
+      if (t.date < lo || t.date > hi || isExcluded(t.cat)) continue;
+      s += t.kind === 'expense' ? t.amount : -t.amount;
+    }
+    return s;
+  }
+
+  // Weeks run Monday to Sunday; the first and last week of the month are cut at the month edges.
+  // Each week gets a share of what was left at its start, sized by its days out of the days remaining.
+  function weekData(m, today, d) {
+    const [y, mo] = m.split('-').map(Number);
+    const dim = daysIn(m);
+    const dow = (new Date(y, mo - 1, today).getDay() + 6) % 7; // Mon=0
+    const ws = Math.max(1, today - dow), we = Math.min(dim, today - dow + 6);
+    const ds = n => m + '-' + String(n).padStart(2, '0');
+    const before = ws > 1 ? spentBetween(ds(1), ds(ws - 1)) : 0;
+    const remaining = d.budget - before;
+    const allowance = Math.max(0, remaining * (we - ws + 1) / (dim - ws + 1));
+    const spent = spentBetween(ds(ws), ds(we));
+    const fmt = n => new Date(y, mo - 1, n).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    return { allowance, spent, left: allowance - spent, frac: (today - ws + 1) / (we - ws + 1), range: ws === we ? fmt(ws) : `${fmt(ws)} to ${fmt(we).replace(/^\w+, /, '')}` };
+  }
+
+  // Spending through today vs. the same day of last month.
+  function lastMonthLine(m, today, total) {
+    const pm = shiftMonth(m, -1);
+    if (!S.txns.some(t => t.date.startsWith(pm))) return '';
+    const day = Math.min(today, daysIn(pm));
+    const prev = spentBetween(pm + '-01', pm + '-' + String(day).padStart(2, '0'));
+    const diff = Math.round(total - prev);
+    const name = monthLabel(pm).split(' ')[0];
+    if (Math.abs(diff) < 1) return `Same as this time in ${name}`;
+    return `<b class="num" style="color:${diff < 0 ? 'var(--good)' : 'var(--bad)'}">${money(Math.abs(diff), false)} ${diff < 0 ? 'less' : 'more'}</b> than this time in ${name}`;
+  }
+
+  function syncedLabel() {
+    if (!S.lastSync) return 'Not synced yet';
+    const mins = Math.floor((Date.now() - new Date(S.lastSync).getTime()) / 60000);
+    if (mins < 1) return 'Synced just now';
+    if (mins < 60) return `Synced ${mins} min ago`;
+    const h = Math.floor(mins / 60);
+    if (h < 24) return `Synced ${h} hr ago`;
+    const days = Math.floor(h / 24);
+    return days === 1 ? 'Synced yesterday' : `Synced ${days} days ago`;
+  }
+
   // ---------- views ----------
   function header() {
     const isNow = ui.month === monthOf(new Date());
@@ -177,24 +226,34 @@
       return header() + `<div class="empty"><b>No transactions yet</b>Once the Chase text Shortcut is set up, tap <b style="display:inline;font-size:inherit">Sync</b> and pick <code>budget-log.txt</code>. Setup steps are under Budgets.</div>`;
     }
 
-    let sub;
-    if (isNow) sub = left >= 0 ? `About <b class="num">${money(left / daysLeft, false)}</b> a day for the next ${daysLeft} day${daysLeft === 1 ? '' : 's'}` : `<b class="num">${money(-left, false)}</b> over with ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`;
-    else sub = left >= 0 ? `Finished <b class="num">${money(left, false)}</b> under budget` : `Finished <b class="num">${money(-left, false)}</b> over budget`;
-
-    const pct = d.budget > 0 ? Math.min(100, d.total / d.budget * 100) : 0;
-    let html = header() + `
+    let html = header();
+    if (isNow) {
+      const w = weekData(ui.month, today, d);
+      const cmp = lastMonthLine(ui.month, today, d.total);
+      const wpct = w.allowance > 0 ? Math.min(100, w.spent / w.allowance * 100) : (w.spent > 0 ? 100 : 0);
+      const monthLine = left >= 0 ? `<b class="num">${money(left, false)}</b> left in ${monthLabel(ui.month).split(' ')[0]}` : `<b class="num">${money(-left, false)}</b> over for ${monthLabel(ui.month).split(' ')[0]}`;
+      html += `
       <section class="hero">
-        <div class="label">${isNow ? 'Left to spend' : (left >= 0 ? 'Left over' : 'Over budget')}</div>
+        <div class="label">${w.left >= 0 ? 'Left this week' : 'Over this week'}</div>
+        <div class="big num ${w.left < 0 ? 'over' : ''}">${money(Math.abs(w.left), false)}</div>
+        <div class="sub">${monthLine}</div>
+        ${cmp ? `<div class="sub">${cmp}</div>` : ''}
+        <div class="bar"><i class="${barClass(w.spent, w.allowance, w.frac)}" style="width:${wpct}%"></i><span class="pace" style="left:${w.frac * 100}%"></span></div>
+        <div class="bar-legend"><span class="num">${money(w.spent, false)} of ${money(w.allowance, false)}</span><span>${w.range}</span></div>
+        <div class="synced">${syncedLabel()}</div>
+      </section>`;
+    } else {
+      const sub = left >= 0 ? `Finished <b class="num">${money(left, false)}</b> under budget` : `Finished <b class="num">${money(-left, false)}</b> over budget`;
+      const pct = d.budget > 0 ? Math.min(100, d.total / d.budget * 100) : 0;
+      html += `
+      <section class="hero">
+        <div class="label">${left >= 0 ? 'Left over' : 'Over budget'}</div>
         <div class="big num ${left < 0 ? 'over' : ''}">${money(Math.abs(left), false)}</div>
         <div class="sub">${sub}</div>
-        <div class="bar"><i class="${barClass(d.total, d.budget, frac)}" style="width:${pct}%"></i>${isNow ? `<span class="pace" style="left:${frac * 100}%"></span>` : ''}</div>
+        <div class="bar"><i class="${barClass(d.total, d.budget, null)}" style="width:${pct}%"></i></div>
         <div class="bar-legend"><span class="num">${money(d.total, false)} spent</span><span class="num">${money(d.budget, false)} budget</span></div>
-      </section>
-      <div class="stats">
-        <div class="stat"><div class="k">Income</div><div class="v num">${money(d.income, false)}</div></div>
-        <div class="stat"><div class="k">Invested</div><div class="v num">${money(d.invested, false)}</div></div>
-        <div class="stat"><div class="k">Net</div><div class="v num" style="color:${d.income - d.total >= 0 ? 'var(--good)' : 'var(--bad)'}">${money(d.income - d.total, false)}</div></div>
-      </div>`;
+      </section>`;
+    }
 
     if (d.uncat) html += `<button class="banner" data-act="filter" data-cat="${UNCAT}"><span><b>${d.uncat}</b> transaction${d.uncat === 1 ? '' : 's'} need${d.uncat === 1 ? 's' : ''} a category</span><span class="link">Fix</span></button>`;
 
